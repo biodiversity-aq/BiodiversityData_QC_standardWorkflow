@@ -1,0 +1,714 @@
+---
+title: "DataQCWorkflow"
+author: "Maxime Sweetlove"
+date: "2020-09-09"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+# 0. General Data Quality Controll and Formatting protocol
+
+### 0.1 Summary
+The in-house workflow to Quality Control (QC) biodiversity data for biodiversity.aq
+Version 3.0  2020-09-09
+Authors Maxime Sweetlove
+
+### 0.2 How to use this workflow
+The aim of this document is to provide a general workflow to format data into DarwinCore, perform a general but extensive Quality Control, and edit where needed in an automated fashion prior to publishing the data on the ITP. 
+
+This workflow consists of 3 main chapters, each divided into several subsections. The first chapter deals with handlings for all datasets, and should always be run. The second chapter describes how to QC data with an occurrence core, and the third chapter deals with data formatted as an event core.
+
+The idea is to choose a data Core type (occurrence or event), and to select and runs specific sections of code in that chapter depending on the dataset. Each sub-section is specific for a certain handling, so not all code should be run each time.
+
+
+## Chapter 1. Setting up
+### 1.1 Setting up the environment. 
+This section needs to be run for each dataset.
+
+```{r setting_up, echo=FALSE, eval = FALSE}
+#data manipulation libraries
+library(readxl)
+library(stringr)
+library(tidyr)
+library(dplyr)
+
+#taxonomy
+library(worrms)
+library(rgbif)
+
+#geography
+library(mapview)
+library(sp)
+library(rgeos)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+#data QC code develloped by the biodiversity.aq team
+# install from https://github.com/biodiversity-aq/MicrobeDataTools
+library(MicrobeDataTools)
+```
+
+### 1.2. Data-specific setup
+The reccomendation to clean and quality control data is to keep al raw (i.e. unaltered) and intermediate files in addition to the final files. This can best be done by physically separating those into individual folders. For this, we propose the 01_raw, 02_interim and 03_processed directory structure, which is based on the cookycutter principles. At the level of the person/team working on different datasets, the 01_raw folder holds all the datasets that still need to be processed. When work has started on a dataset, it is removed from the 01_raw folder and moved to the 02_interim to prevent people working in parallell on the same dataset. When all all processing has been done, the dataset can be moved to the 03_processed folder, indicating no more work is needed. Within the folder of each dataset, this tructure can be repeated. All raw files are kept unaltered in the dataset/11_raw folder, intermediate files can be stored in the dataset/12_interim folder, and the final cleaned data should be saved to the dataset/13_processed folder.
+
+The following chunk of code wel setup this structure:
+mainDir -|-01_raw/dataset
+         |
+         |-02_interim/dataset -|- 1_01_raw
+         |                     |- 1_02_interim
+         |                     |- 1_03_processed
+         |
+         |-03_processed/dataset -|- 1_01_raw
+                                 |- 1_02_interim
+                                 |- 1_03_processed
+                          
+
+```{r data_specific_setup, eval = FALSE}
+# change:
+# main directory: the root directory where the data lives
+mainDir <- "/Users/msweetlove/Royal Belgian Institute of Natural Sciences/Royal Belgian Institute of Natural Sciences/Anton Van de Putte - data_processing"
+# sub directories at the personal/team level (0)
+rawDir <- "01_raw"
+intDir <- "02_interim"
+procDir <- "03_processed"
+# sub directories at the dataset level (1)
+rawDataDir <- "1_01_raw"
+intDataDir <- "1_02_interim"
+procDataDir <- "1_03_processed"
+
+# find the dataset in the raw directory
+list.files(paste(mainDir, rawDir, sep="/"))
+datasetDir <- "2443_OstracodaSMB"
+
+#move from raw to interim to indicate work on the dataset has started
+file.move(paste(mainDir, rawDir, datasetDir, sep="/"), 
+          paste(mainDir, intDir, datasetDir, sep="/"))
+list.files(paste(mainDir, intDir, sep="/")) # check if the move was successfull
+
+#create the 11_raw-12_interim-13_processed structure in the dataset folder internally
+fileName <- list.files(paste(mainDir, intDir, datasetDir, sep="/"));fileName #make sure this sure this is just 1 file
+dir.create(paste(mainDir, intDir, datasetDir, rawDataDir, sep="/"))
+dir.create(paste(mainDir, intDir, datasetDir, intDataDir, sep="/"))
+dir.create(paste(mainDir, intDir, datasetDir, procDataDir, sep="/"))
+# move the dataset file to the 11_raw folder
+file.move(paste(mainDir, intDir, datasetDir, fileName, sep="/"), 
+          paste(mainDir, intDir, datasetDir, rawDataDir, fileName, sep="/"))
+
+# copy raw data to the 12_interim folder, perform manual changes there first before continuing
+file.copy(paste(mainDir, intDir, datasetDir, rawDataDir, fileName, sep="/"), 
+          paste(mainDir, intDir, datasetDir, intDataDir, fileName, sep="/"))
+
+```
+
+Read the data (xlsx or csv)
+```{r read_data, eval = FALSE}
+# read data
+if(grepl(".csv$", fileName)){
+  coreData <- read.csv(paste(mainDir, intDir, datasetDir, intDataDir, fileName, sep="/"))
+  cat(paste("read ", fileName, " file", sep=""))
+}else{
+  xlsxFile<-paste(mainDir, intDir, datasetDir, intDataDir, fileName, sep="/")
+  num_sheets <-   length(excel_sheets(xlsxFile))
+  cat(paste("the file is in .xls or .xlsx,\nthere are", num_sheets, "sheets"))
+  # read sheet 1
+  coreData <- data.frame(readxl::read_excel(xlsxFile, sheet=1))
+  # if there are more sheets: read them manually with code below:
+  #extData1 <- data.frame(readxl::read_excel(xlsxFile, sheet=3))
+  #extData2 <- data.frame(readxl::read_excel(xlsxFile, sheet=4))
+}
+
+# remove empty columns and rows
+emptycols <- colSums(is.na(coreData)) >= (nrow(coreData)-1)
+coreData <- coreData[!emptycols]
+
+# have a look at the data
+head(coreData)
+```
+
+### 1.3. Mapping terms to DarwinCore
+Here a general mapping to DarwinCore (DwC) is performed. This can be done manually, or can be guided by the dataQC.TermsCheck function of the MicrobeDataTools package. If out.type is set to "full", or a list of length 3 will be returned, with "terms_OK" (terms that comply to the standard), "terms_wrongWithSolution" (terms that do not comply to the standard but have a close match), and "terms_notFound" (terms that do not comply to the standard, and that not match any term in it).
+
+At this stage, not all terms need to be mapped. Terms that do not fit should simply be left, and will be dealth with later. Also, only the core (event or occurrence) will be mapped. possible extension files (e.g. occurrences) will be dealth with in chapter 4.
+
+```{r mapToDarwinCore, eval = FALSE}
+colnames(coreData)
+
+# do an automatic mapping with MicrobeDataTools
+field_dict <- MicrobeDataTools::dataQC.TermsCheck(colnames(coreData), exp.standard="DwC")
+field_dict
+
+# first check if all matches in terms_wrongWithSolution look OK
+field_dict$terms_wrongWithSolution
+#remove bad matches (with original column name)
+bad_matches <- c("")
+field_dict$terms_wrongWithSolution <- field_dict$terms_wrongWithSolution[!names(field_dict$terms_wrongWithSolution) %in% bad_matches]
+field_dict$terms_notFound <- c(field_dict$terms_notFound, bad_matches)
+
+# automatic renaming all terms with a good DwC match
+for(f in 1:length(field_dict$terms_wrongWithSolution)){
+  oldName <- names(field_dict$terms_wrongWithSolution[f])
+  DwCName <- unname(field_dict$terms_wrongWithSolution[f])
+  colnames(coreData)[colnames(coreData)==oldName]<-DwCName
+}
+
+#some help from MicrobeDataTools to find the best DwC match
+sort(names(MicrobeDataTools::TermsSyn_DwC)) # will list all accepted DarwinCore terms
+term.definition("verbatimLatitude") # will give the definition of a term
+
+# manual renaming if necessary
+colnames(coreData)[colnames(coreData)=="DateLastModified"]<-"modified"
+colnames(coreData)[colnames(coreData)=="Notes"]<-"occurrenceRemarks"
+colnames(coreData)[colnames(coreData)=="DayCollected"]<-"day"
+colnames(coreData)[colnames(coreData)=="...77"]<-"samplingProtocol"
+colnames(coreData)[colnames(coreData)=="YearIdentified"]<-"dateIdentified"
+colnames(coreData)[colnames(coreData)=="DepthMax"]<-"maximumDepthInMeters"
+
+#removing columns
+coreData<-coreData[,!colnames(coreData) %in% c("catalogNumber")]
+```
+
+### 1.4 QC on coordinates
+QC coordinates
+```{r QC_coordinates, eval = FALSE}
+# specify the field names that were used for coordinate data 
+#(lat2 and lon2 can be "" if all data were points)
+lat1<-"decimalLatitude" #should be: "decimalLatitude"
+lat2<-"" #can be: "", otherwise stop latitude of line segment
+lon1<-"decimalLongitude" #should be: "decimalLongitude"
+lon2<-"" #can be "", otherwise stop longitude of line segment
+
+# QC coordinate format, and make everything into decimal values
+# the coordinate.to.decimal should recognize all sorts of coordinate data formats (different types and encodings of degrees, with SNWE, comma or point separated,...), and only handles 1 value at a time (so different formats in a column can be present)
+for(co in c(lat1, lat2, lon1, lon2)){
+  if(co!=""){
+    coreData[,co] <- sapply(coreData[,co], function(x){x<-MicrobeDataTools::coordinate.to.decimal(x)})
+  }
+}
+
+head(coreData) #check the data
+
+## case LINE SEGMENT data
+coreData$decimalLatitude <- NA
+coreData$decimalLongitude <- NA
+coreData$footprintWKT <- NA
+for(rw in 1:nrow(coreData)){
+  if(!is.na(coreData[rw,lat1]) &
+     !is.na(coreData[rw,lat2]) &
+     !is.na(coreData[rw,lon1]) &
+     !is.na(coreData[rw,lon2])){
+    # midpoint of line segments M = (lat1+lat2)/2, (lon1+lon2)/2
+    coreData[rw,]$decimalLatitude <- (coreData[rw,lat1] + coreData[rw,lat2])/2
+    coreData[rw,]$decimalLongitude <- (coreData[rw,lon1] + coreData[rw,lon2])/2
+    #footprintWKT LINESTRING
+    coreData[rw,]$footprintWKT <- paste("LINESTRING(", as.character(coreData[rw,lon1]), " ",
+                                         as.character(coreData[rw,lat1]), ", ",
+                                         as.character(coreData[rw,lon2]), " ", 
+                                         as.character(coreData[rw,lat2]),")", sep="")
+     } else   if(!is.na(coreData[rw,lat1]) &
+     !is.na(coreData[rw,lon1])){
+           coreData[rw,]$decimalLatitude <- coreData[rw,lat1]
+           coreData[rw,]$decimalLongitude <- coreData[rw,lon1]
+           #footprintWKT POINT
+           coreData[rw,"footprintWKT"] <- paste("POINT(", as.character(coreData[rw,lon1]), " ",
+                                         as.character(coreData[rw,lat1]), ")", sep="")
+     }
+}
+# remove the old columns with faulty names
+coreData <- coreData[,!colnames(coreData) %in% c(lat1, lat2, lon1, lon2)]
+
+# sub case: there are also points:
+for(rw in 1:nrow(coreData)){
+  if(!is.na(coreData[rw,]$decimalLongitude) & !is.na(coreData[rw,]$decimalLatitude) & is.na(coreData[rw,]$footprintWKT)){
+    coreData[rw,]$footprintWKT<-paste("POINT(", as.character(coreData[rw,]$decimalLongitude), " ",as.character(coreData[rw,]$decimalLatitude), ")", sep="")
+  }
+}
+## END case LINE SEGMENT data
+
+# visual QC: plot data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+p<- ggplot(data = world) +
+      geom_sf() +
+      xlab("Longitude") + ylab("Latitude") +
+      ggtitle("coordinate QC") +
+      geom_point(data = coreData, aes(y=decimalLatitude, x=decimalLongitude),
+               colour="red",size=0.9)
+print(p)
+
+min(coreData$decimalLatitude)
+# mirror coordinates (when plotting North)
+coreData$decimalLatitude<- -coreData$decimalLatitude
+coreData$decimalLongitude<- -coreData$decimalLongitude
+# look at north samples
+head(coreData[coreData$decimalLatitude>1,])
+# samples at 0,0 shuld be NA
+coreData[coreData$decimalLatitude==0 &coreData$decimalLongitude==0,][,c("decimalLatitude", "decimalLongitude")]<-NA
+```
+
+### 1.5 QC on date and time
+QC dates and time
+```{r QC_dateTime, eval = FALSE}
+colnames(coreData)
+## case 1. year month day, no eventDate
+coreData$eventDate <- paste(coreData$year, coreData$month, coreData$day, sep="-")
+# when there is missing data in year month day: remove those from eventDate
+coreData$eventDate<-gsub("NA-NA-NA$", "", coreData$eventDate)
+coreData$eventDate<-gsub("-NA-NA$", "", coreData$eventDate)
+coreData$eventDate<-gsub("-NA$", "", coreData$eventDate)
+## END case 1 year month day, no eventDate
+
+## case 2. eventDate, no year month day
+# make sure dates are in YYYY-MM-DD format
+dates <- MicrobeDataTools::dataQC.dateCheck(coreData, c("eventDate"))
+dates$warningmessages #see if any errors occurred or dates that could not be converted
+coreData$eventDate <- dates$values
+
+# make year month day columns (if all eventDates are OK)
+coreData$year <- sapply(coreData$eventDate, function(x){x<-strsplit(x, "-")[[1]][1]})
+coreData$month <- sapply(coreData$eventDate, function(x){x<-strsplit(x, "-")[[1]][2]})
+coreData$day <- sapply(coreData$eventDate, function(x){x<-strsplit(x, "-")[[1]][3]})
+## END case 2. eventDate, no year month day
+
+# eventTime
+eventTime <- gsub("1899-12-31 ", "", coreData$Time.of.dredge..local.time.)
+coreData <- coreData[,!colnames(coreData) %in% c("coreData$Time.of.dredge..local.time.")]
+```
+
+Now some general checks have been performed the rest of the QC is specific to the data core and extentions that are appropriate to the data. Chapter 2 will deal with the occurrence core, 3 with the event core, and 4 will handle different extentions. As the following sections can be highly specifi to individual datasets, any Non-relevant sections should be skipped.
+
+## Chapter 2. The Occurrence Core
+### 2.1. mapping to DarwinCore
+As most terms have been mapped to DwC, some common and mandatory fields for the occurrence core can now be added.
+
+```{r mapToOccurrenceCore, eval = FALSE}
+occur_prefix <- "ICM_CnidariaCollection"
+# occurrenceID
+coreData$occurrenceID <- paste(occur_prefix,
+                     stringr::str_pad(1:nrow(coreData), nchar(nrow(coreData)), pad = "0"), 
+                     sep=":")
+
+# common fields in the occurrence core
+coreData$organismQuantity<-1
+coreData$organismQuantityType<-"individual count"
+coreData$basisOfRecord<-"HumanObservation"
+coreData$modified<-Sys.Date()
+coreData$license <- "CC-BY 4.0"
+coreData$language <- "English"
+
+# optional common fields, be sure it doesn't overwrite data
+coreData$collectionCode <- "RBINS"
+coreData$occurrenceStatus <- "present"
+```
+
+### 2.2 QC on the taxon names
+The scientific names will be cleaned and standardized, and where possible mapped to a taxonomic backbone (in this case:WORMS).
+
+```{r scientificNameID, eval = FALSE}
+# scientificName formatting
+unique(coreData$scientificName) #first look what we're dealing with
+coreData$vernacularName <- coreData$scientificName #dump original crappy names
+
+# clean up the scientific names (remove numbers, suffixes,..)
+coreData$scientificName <- gsub(" sp. ", "", coreData$scientificName)
+coreData$scientificName <- gsub(" [0-9]", "", coreData$scientificName)
+coreData$scientificName <- gsub("[0-9]", "", coreData$scientificName)
+coreData$scientificName <- gsub("gen. nov.", "", coreData$scientificName, fixed=T)
+coreData$scientificName <- gsub("gen nov.", "", coreData$scientificName, fixed=T)
+coreData$scientificName <- gsub(" sp.", "", coreData$scientificName)
+coreData$scientificName <- gsub("^ ", "", coreData$scientificName)
+
+# look up a scientificNameID via WORMS taxon match
+# this part can take some time
+taxid_key <- data.frame(taxname = unique(coreData$scientificName),
+                        scientificNameID=NA, aphID=NA, kingdom=NA, phylum=NA,
+                        class=NA, order=NA, family=NA,
+                        genus=NA, specificEpithet=NA,
+                        scientificNameAuthorship=NA)
+for(nc in 1:nrow(taxid_key)){
+  taxon<-as.character(taxid_key[nc,]$taxname)
+  if(!taxon %in% c("", "NA", NA)){
+    taxid <- tryCatch({
+      tx <- worrms::wm_name2id(taxon)
+    }, error = function(e){
+      tx <- ""
+    }
+    ) 
+    if(taxid != ""){
+      taxnum <- taxid
+      taxid<-paste("urn:lsid:marinespecies.org:taxname:", taxid, sep="")
+      taxdata <- data.frame(worrms::wm_record(taxnum))
+      
+      taxid_key[nc,]$scientificNameID <- taxid
+      taxid_key[nc,]$kingdom<-taxdata$kingdom
+      taxid_key[nc,]$phylum<-taxdata$phylum
+      taxid_key[nc,]$class<-taxdata$class
+      taxid_key[nc,]$order<-taxdata$order
+      taxid_key[nc,]$family<-taxdata$family
+      taxid_key[nc,]$genus<-taxdata$genus
+      taxid_key[nc,]$specificEpithet <- strsplit(taxdata$scientificname, 
+                                                 " ")[[1]][2]
+      if(!is.na(taxdata$authority)){
+              author<-strsplit(taxdata$authority, ", ")[[1]][1]
+              author<-gsub("\\(", "", author, fixed=FALSE)
+      }
+      taxid_key[nc,]$scientificNameAuthorship<-author
+      
+    }else{
+      taxid_key[nc,]$scientificNameID <- taxid
+      taxid_key[nc,]$aphID <- taxnum
+    }
+  }
+}
+
+# move the data from the taxid_key to the occurrences
+for(term in setdiff(colnames(taxid_key), c("taxname", "aphID", colnames(coreData)))){
+  coreData[,term]  <- as.character(coreData$scientificName)
+  coreData[,term] <- unname(unlist(sapply(as.character(coreData[,term]), 
+                                                               FUN = function(x){                                                 gsub(x,taxid_key[taxid_key$taxname==x,][,term],x)
+                                                            })))
+}
+
+head(coreData) #have another look at the data
+```
+
+###2.3. dealing with the remaining data
+Some fields could not be mapped to any DwC term. There are several options to deal with this. One is to add the information to the dynamicProperties field. If it is about a lot of data, or thematic data, an extention can be chosen, like extendedn Measurement or Fact (eMoF), GGBN, MIxS,...
+```{r QC_dynamicProperties, eval = FALSE}
+# first look at what collumns have not been mapped to DwC
+intersect(colnames(coreData), field_dict$terms_notFound) 
+
+#create the content
+dp_data<-c()
+dynamicProp_cols<-c("startDayOfYear")
+for(cl in dynamicProp_cols){
+ dp_data_sub <- paste("{", cl, ":", coreData[,cl], "}", sep="") 
+#remove fields that were empty
+dp_data_sub[is.na(coreData[,cl])] <- "" 
+dp_data_sub[coreData[,cl]==""] <- "" 
+dp_data<-paste(dp_data, dp_data_sub, sep=", ")
+
+dp_data<-gsub(", $", "", dp_data)
+dp_data<-gsub("^, ", "", dp_data)
+}
+
+coreData$dynamicProperties <- dp_data
+
+# remove the original columns that do not fit DwC
+coreData<-coreData[,!colnames(coreData) %in% dynamicProp_cols]
+
+```
+
+## 2.4. finalize and save data
+``` {r occ_save, eval = FALSE}
+# clean up the filename for the output file
+fileNameOut<-gsub(".", "_", fileName, fixed=T)
+fileNameOut<-gsub(" ", "_", fileNameOut, fixed=T)
+fileNameOut<-gsub("\'", "_", fileNameOut, fixed=T)
+fileNameOut<-gsub("_xls", ".csv", fileNameOut, fixed=T)
+fileNameOut<-gsub("_csv", ".csv", fileNameOut, fixed=T)
+fileNameOut<-gsub("_xlsx", ".csv", fileNameOut, fixed=T)
+
+#standardize output name if wanted
+fileNameOut <- paste("OccAQBiodiv", gsub("-", "", Sys.Date()),
+                     "_", fileNameOut, sep="_")
+
+# write to 12_interim
+write.csv(coreData, 
+          paste(mainDir, intDir, datasetDir, intDataDir, fileNameOut, sep="/")
+          , na="", row.names = FALSE)
+# write to 13_processed
+write.csv(coreData, 
+          paste(mainDir, intDir, datasetDir, procDataDir, fileNameOut, sep="/")
+          , na="", row.names = FALSE)
+
+#move from interim to processed to indicate work on the dataset has finished
+file.move(paste(mainDir, intDir, datasetDir, sep="/"), 
+          paste(mainDir, procDir, datasetDir, sep="/"))
+list.files(paste(mainDir, procDir, sep="/")) # check if the move was successfull
+
+# the bounding box to add to the IPT
+MicrobeDataTools::get.boundingBox(coreData$decimalLatitude, coreData$decimalLongitude)
+
+```
+
+
+
+## Chapter 3. The Event Core
+### 3.1. splitting the event core form the occurrence extension
+When events and occurrences come from a single file, the event core must be extracted and aggregated, and must be separated from the occurrence data.
+
+
+```{r split_event_occurrences, eval = FALSE}
+extOccur<-coreData #copy the data
+colnames(coreData)
+event_cols <-c("eventDate", "decimalLatitude", "decimalLongitude",
+               "minimumDepthInMeters", "maximumDepthInMeters")
+# extract events as unique combinations of elements
+coreEvent<-unique(coreData[,intersect(colnames(coreData), event_cols)])
+
+# create new eventIDs
+event_prefix <- "2443_Ostracoda"
+eventNames <- paste(event_prefix,
+                     stringr::str_pad(1:nrow(coreEvent), nchar(nrow(coreEvent)), pad = "0"), 
+                     sep=":")
+coreEvent$eventID<-eventNames
+
+#link events back to the occurrences
+coreEvent$eventID_raw<-apply(coreEvent[,intersect(colnames(coreEvent),event_cols)],1,paste,collapse="_")
+extOccur$eventID<-apply(extOccur[,intersect(colnames(extOccur),event_cols)],1,paste,collapse ="_")
+
+extOccur$eventID<- sapply(extOccur$eventID, FUN=function(x){x<-coreEvent[coreEvent$eventID_raw==x,]$eventID})
+
+coreEvent<-coreEvent[,!colnames(coreEvent) == "eventID_raw"]
+
+```
+
+### 3.2. cleaning the event core and further mapping to DarwinCore
+As most terms have been mapped to DwC, some common and mandatory fields for the event core can now be added.
+```{r mapToEventCore, eval = FALSE}
+#coreEvent <- coreData #! only run when 3.1 was NOT executed
+
+# eventID
+coreEvent$eventID #check given eventIDs (could be derived from station or sample names)
+
+## case 1. there is a base for event IDs
+eventNames<-coreEvent$Station.name
+eventNames <- gsub("-", "_", eventNames, fixed=T)
+eventNames <- gsub(" ", "_", eventNames, fixed=T)
+## END case 1. there is a base for event IDs
+
+## case 2. create a new logical and fixed event prefix
+event_prefix <- "2443_Ostracoda"
+eventNames <- paste(event_prefix,
+                     stringr::str_pad(1:nrow(coreEvent), nchar(nrow(coreEvent)), pad = "0"), 
+                     sep=":")
+## END case 2. create a new logical and fixed event prefix
+
+coreEvent$eventID <- eventNames
+
+# common fields in the event core
+coreEvent$parentEventID<-"ANTARXXVII_leg2_feb2020" #event_prefix
+coreEvent$license <- "CC-BY 4.0"
+coreEvent$language <- "English"
+coreEvent$modified<-Sys.Date()
+coreEvent$habitat <- "ocean"
+coreEvent$fieldNumber <- ""
+coreEvent$institutionCode <- "ZHM"
+
+
+```
+
+###3.3. dealing with the remaining data
+Some fields could not be mapped to any DwC term. There are several options to deal with this. One is to add the information to the dynamicProperties field. If it is about a lot of data, or thematic data, an extention can be chosen, like extendedn Measurement or Fact (eMoF), GGBN, MIxS,...
+```{r QC_dynamicProperties, eval = FALSE}
+# first look at what collumns have not been mapped to DwC
+intersect(colnames(coreEvent), field_dict$terms_notFound) 
+
+#create the content
+dp_data <- paste("{isolation_strain:", coreEvent$Isolate...strain, "}", sep="") 
+#remove fields that were empty
+dp_data[!is.na(coreEvent$Isolate...strain)] <- NA
+coreEvent$dynamicProperties <- dp_data
+
+# remove the original columns that do not fit DwC
+coreEvent<-coreEvent[,!colnames(coreEvent) %in% intersect(colnames(coreData), field_dict$terms_notFound) ]
+
+```
+
+###3.4. check and save the event core
+
+First, some checks need to assess wether each eventID differs from it's parentEventID, and wether all parentEventID are also listed as events (i.e. having a corresponding eventID).
+
+``` {r event_check, eval = FALSE}
+library(obistools)
+
+# what eventIDs are not diffrent from their parentEventID?
+which(coreEvent$eventID == coreEvent$parentEventID)
+
+#Check if all parentEventIDs have corresponding eventIDs.
+obistools::check_eventids(coreEvent)
+
+```
+
+Then, the event core file can be saved.
+``` {r event_save, eval = FALSE}
+# clean up the filename for the output file
+fileNameOut<-gsub(".", "_", fileName, fixed=T)
+fileNameOut<-gsub(" ", "_", fileNameOut, fixed=T)
+fileNameOut<-gsub("\'", "_", fileNameOut, fixed=T)
+fileNameOut<-gsub("_xls", ".csv", fileNameOut, fixed=T)
+fileNameOut<-gsub("_csv", ".csv", fileNameOut, fixed=T)
+fileNameOut<-gsub("_xlsx", ".csv", fileNameOut, fixed=T)
+
+fileNameOut<-"2443_Ostracoda"
+  
+#standardize output name if wanted
+fileNameEvent <- paste(fileNameOut, "event.csv", sep="_")
+
+# write to 12_interim
+write.csv(coreEvent, 
+          paste(mainDir, intDir, datasetDir, intDataDir, fileNameEvent, sep="/")
+          , na="", row.names = FALSE)
+# write to 13_processed
+write.csv(coreEvent, 
+          paste(mainDir, intDir, datasetDir, procDataDir, fileNameEvent, sep="/")
+          , na="", row.names = FALSE)
+
+```
+
+## Chapter 4. Extentions
+### 4.1 occurrence extention to the eventCore
+The extOccur dataframe was made when dealing with the eventCore data. Here, this occurrence extension is further cleaned, largely analogously to the occurrence core.
+
+```{r mapToOccurrenceCore, eval = FALSE}
+occur_prefix <- paste(event_prefix, "occur", sep="_")
+# occurrenceID
+extOccur$occurrenceID <- paste(occur_prefix,
+                     stringr::str_pad(1:nrow(coreData), nchar(nrow(coreData)), pad = "0"), 
+                     sep=":")
+
+# common fields in the occurrence core
+extOccur$organismQuantity<-1
+extOccur$organismQuantityType<-"individuals"
+extOccur$basisOfRecord<-"HumanObservation"
+
+# optional common fields, be sure it doesn't overwrite data
+extOccur$collectionCode <- "RBINS"
+extOccur$occurrenceStatus <- "present"
+
+colnames(extOccur)
+# remove info that is already in the event Core
+colnames(extOccur)[colnames(extOccur)=="decimalLatitude"]<-"verbatimLatitude"
+colnames(extOccur)[colnames(extOccur)=="decimalLongitude"]<-"verbatimLongitude"
+colnames(extOccur)[colnames(extOccur)=="eventDate"]<-"verbatimEventDate"
+  
+extOccur<-extOccur[,!colnames(extOccur) %in% c("year", "month", "day") ]
+head(extOccur)
+
+```
+
+### 4.2 QC on the taxon names
+The scientific names will be cleaned and standardized, and where possible mapped to a taxonomic backbone (in this case:WORMS).
+
+```{r scientificNameID, eval = FALSE}
+# scientificName formatting
+unique(extOccur$scientificName) #first look what we're dealing with
+extOccur$vernacularName <- extOccur$scientificName #dump original crappy names
+
+# clean up the scientific names (remove numbers, suffixes,..)
+extOccur$scientificName <- gsub(" sp. ", "", extOccur$scientificName)
+extOccur$scientificName <- gsub(" [0-9]", "", extOccur$scientificName)
+extOccur$scientificName <- gsub("[0-9]", "", extOccur$scientificName)
+extOccur$scientificName <- gsub("gen. nov.", "", extOccur$scientificName, fixed=T)
+extOccur$scientificName <- gsub("gen nov.", "", extOccur$scientificName, fixed=T)
+extOccur$scientificName <- gsub(" sp.", "", extOccur$scientificName)
+extOccur$scientificName <- gsub("^ ", "", extOccur$scientificName)
+
+# look up a scientificNameID via WORMS taxon match
+# this part can take some time
+taxid_key <- data.frame(taxname = unique(extOccur$scientificName),
+                        scientificNameID=NA, aphID=NA, kingdom=NA, phylum=NA,
+                        class=NA, order=NA, family=NA,
+                        genus=NA, specificEpithet=NA,
+                        scientificNameAuthorship=NA)
+for(nc in 1:nrow(taxid_key)){
+  taxon<-as.character(taxid_key[nc,]$taxname)
+  if(!taxon %in% c("", "NA", NA)){
+    taxid <- tryCatch({
+      tx <- worrms::wm_name2id(taxon)
+    }, error = function(e){
+      tx <- ""
+    }
+    ) 
+    if(taxid != ""){
+      taxnum <- taxid
+      taxid<-paste("urn:lsid:marinespecies.org:taxname:", taxid, sep="")
+      taxdata <- data.frame(worrms::wm_record(taxnum))
+      
+      taxid_key[nc,]$scientificNameID <- taxid
+      taxid_key[nc,]$kingdom<-taxdata$kingdom
+      taxid_key[nc,]$phylum<-taxdata$phylum
+      taxid_key[nc,]$class<-taxdata$class
+      taxid_key[nc,]$order<-taxdata$order
+      taxid_key[nc,]$family<-taxdata$family
+      taxid_key[nc,]$genus<-taxdata$genus
+      taxid_key[nc,]$specificEpithet <- strsplit(taxdata$scientificname, 
+                                                 " ")[[1]][2]
+      if(!is.na(taxdata$authority)){
+              author<-strsplit(taxdata$authority, ", ")[[1]][1]
+              author<-gsub("\\(", "", author, fixed=FALSE)
+      }
+      taxid_key[nc,]$scientificNameAuthorship<-author
+      
+    }else{
+      taxid_key[nc,]$scientificNameID <- taxid
+      taxid_key[nc,]$aphID <- taxnum
+    }
+  }
+}
+
+# move the data from the taxid_key to the occurrences
+for(term in setdiff(colnames(taxid_key), c("taxname", "aphID", colnames(extOccur)))){
+  extOccur[,term]  <- as.character(extOccur$scientificName)
+  extOccur[,term] <- unname(unlist(sapply(as.character(extOccur[,term]), 
+                                                               FUN = function(x){                                                 gsub(x,taxid_key[taxid_key$taxname==x,][,term],x)
+                                                            })))
+}
+
+head(extOccur) #have another look at the data
+```
+
+
+###4.3. QC on the IDs
+Some checks need to assess wether all occurrenceIDs are unique wether all eventIDs in an extension have corresponding eventIDs in the core.
+``` {r occur_check, eval = FALSE}
+library(obistools)
+
+# all occurrenceIDs need to be unique
+which(duplicated(extOccur$occurrenceID))
+
+# Check if all eventIDs in an extension have corresponding eventIDs in the core.
+obistools::check_extension_eventids(coreEvent, extOccur)
+
+```
+
+
+###4.4. save the occurrence extention
+``` {r occur_save, eval = FALSE}
+# clean up the filename for the output file
+fileNameoccur <- paste(fileNameOut, "occurreces.csv", sep="_")
+
+# when an error would occur when writing:
+extOccur <- apply(extOccur,2,as.character)
+
+# write to 12_interim
+write.csv(extOccur, 
+          paste(mainDir, intDir, datasetDir, intDataDir, fileNameoccur, sep="/")
+          , na="", row.names = FALSE)
+# write to 13_processed
+write.csv(extOccur, paste(mainDir, intDir, datasetDir, procDataDir, fileNameoccur, sep="/"), na="", row.names = FALSE)
+
+
+#move from interim to processed to indicate work on the dataset has finished
+file.move(paste(mainDir, intDir, datasetDir, sep="/"), 
+          paste(mainDir, procDir, datasetDir, sep="/"))
+list.files(paste(mainDir, procDir, sep="/")) # check if the move was successfull
+
+```
+
+### Acknowledgements
+
+
+# 5. Help for IPT
+#---------------------------------------------
+get.boundingBox(latitudes=eventCore$decimalLatitude,
+                longitudes=eventCore$decimalLongitude)
+
+unique(occurrenceExtension$class)
+
+min(as.Date(eventCore$eventDate))
+max(as.Date(eventCore$eventDate))
+
