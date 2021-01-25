@@ -7,5 +7,5 @@ This repo contains the standardized workflow to Quality Control (QC) biodiversit
 There is an enormous variety in the data that is submitted to biodiversity.aq, for example differing in research environment (e.g. terrestrial, marine, etc.), experimental set-up (e.g. environmental transect, GPS deployments, repeated measurements, etc.) or type of measurements taken (species occurrences, movement tracks, community composition of a fixed sample, abundances, etc.). To accomodate these differences into a single workflow, users can choose a data Core type (occurrence or event), and then select and runs specific sections of code in that chapter depending on the needs of the dataset. Each sub-section is specific for a certain QC or data formatting step, but not all code should be run each time.
 
 ## More information
-For more informations, Please contact the biodiversity.aq team:  https://www.biodiversity.aq/about/contacts/
+For more information, please contact the biodiversity.aq team:  https://www.biodiversity.aq/about/contacts/
 
