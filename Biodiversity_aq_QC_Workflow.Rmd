@@ -71,7 +71,7 @@ mainDir -|-01_raw/dataset
 ```{r data_specific_setup, eval = FALSE}
 # change:
 # main directory: the root directory where the data lives
-mainDir <- "/Users/msweetlove/Royal Belgian Institute of Natural Sciences/Royal Belgian Institute of Natural Sciences/Anton Van de Putte - data_processing"
+mainDir <- ""
 # sub directories at the personal/team level (0)
 rawDir <- "01_raw"
 intDir <- "02_interim"
