@@ -48,9 +48,11 @@ library(sf)
 library(rnaturalearth)
 library(rnaturalearthdata)
 
-#data QC code develloped by the biodiversity.aq team
+#data QC code
 # install from https://github.com/biodiversity-aq/MicrobeDataTools
 library(MicrobeDataTools)
+library(obistools)
+
 ```
 
 ### 1.2. Data-specific setup
@@ -71,7 +73,7 @@ mainDir -|-01_raw/dataset
 ```{r data_specific_setup, eval = FALSE}
 # change:
 # main directory: the root directory where the data lives
-mainDir <- ""
+mainDir <- "/Users/msweetlove/Royal Belgian Institute of Natural Sciences/Royal Belgian Institute of Natural Sciences/Anton Van de Putte - data_processing"
 # sub directories at the personal/team level (0)
 rawDir <- "01_raw"
 intDir <- "02_interim"
@@ -83,7 +85,7 @@ procDataDir <- "1_03_processed"
 
 # find the dataset in the raw directory
 list.files(paste(mainDir, rawDir, sep="/"))
-datasetDir <- "2443_OstracodaSMB"
+datasetDir <- "Belgica_121"
 
 #move from raw to interim to indicate work on the dataset has started
 file.move(paste(mainDir, rawDir, datasetDir, sep="/"), 
@@ -107,6 +109,8 @@ file.copy(paste(mainDir, intDir, datasetDir, rawDataDir, fileName, sep="/"),
 
 Read the data (xlsx or csv)
 ```{r read_data, eval = FALSE}
+#extOccur <- read.csv("/Users/msweetlove/Royal Belgian Institute of Natural Sciences/Royal Belgian Institute of Natural Sciences/Anton Van de Putte - data_processing/03_processed/Belgica121/03_processed/B121_occurrenceExtension_REVBD.csv")
+
 # read data
 if(grepl(".csv$", fileName)){
   coreData <- read.csv(paste(mainDir, intDir, datasetDir, intDataDir, fileName, sep="/"))
@@ -295,6 +299,7 @@ coreData$occurrenceID <- paste(occur_prefix,
 coreData$organismQuantity<-1
 coreData$organismQuantityType<-"individual count"
 coreData$basisOfRecord<-"HumanObservation"
+coreData$occurrenceStatus <- "present"
 coreData$modified<-Sys.Date()
 coreData$license <- "CC-BY 4.0"
 coreData$language <- "English"
@@ -524,13 +529,11 @@ coreEvent<-coreEvent[,!colnames(coreEvent) %in% intersect(colnames(coreData), fi
 First, some checks need to assess wether each eventID differs from it's parentEventID, and wether all parentEventID are also listed as events (i.e. having a corresponding eventID).
 
 ``` {r event_check, eval = FALSE}
-library(obistools)
-
 # what eventIDs are not diffrent from their parentEventID?
 which(coreEvent$eventID == coreEvent$parentEventID)
 
 #Check if all parentEventIDs have corresponding eventIDs.
-obistools::check_eventids(coreEvent)
+obistools::check_eventids(tibble(coreEvent))
 
 ```
 
@@ -606,15 +609,28 @@ extOccur$scientificName <- gsub("[0-9]", "", extOccur$scientificName)
 extOccur$scientificName <- gsub("gen. nov.", "", extOccur$scientificName, fixed=T)
 extOccur$scientificName <- gsub("gen nov.", "", extOccur$scientificName, fixed=T)
 extOccur$scientificName <- gsub(" sp.", "", extOccur$scientificName)
-extOccur$scientificName <- gsub("^ ", "", extOccur$scientificName)
+extOccur$scientificName <- gsub(" cf.*$", "", extOccur$scientificName)
+extOccur$scientificName <- gsub(" \\(cf.*$", "", extOccur$scientificName)
+
+extOccur$scientificName <- gsub("^ ", "", extOccur$scientificName) #leading spaces
+extOccur$scientificName <- gsub(" $", "", extOccur$scientificName) #trailing spaces
+extOccur$scientificName <- gsub(" $", "", extOccur$scientificName) #repait trailing spaces
+
+## make sure scientific names starts with capital!
+#name<-c("jhsdkjsdb sdjc", "sdabvjsd p")
+#paste(toupper(substr(extOccur$scientificName, 1, 1)), substr(extOccur$scientificName, 2, nchar(extOccur$scientificName)), sep="")
+
+#extOccur$identificationQualifier <- ??
 
 # look up a scientificNameID via WORMS taxon match
 # this part can take some time
 taxid_key <- data.frame(taxname = unique(extOccur$scientificName),
-                        scientificNameID=NA, aphID=NA, kingdom=NA, phylum=NA,
-                        class=NA, order=NA, family=NA,
-                        genus=NA, specificEpithet=NA,
-                        scientificNameAuthorship=NA)
+                        scientificName ="",
+                        scientificNameID="", aphID="", kingdom="", phylum="",
+                        class="", order="", family="",
+                        genus="", specificEpithet="",
+                        scientificNameAuthorship="")
+taxid_key <- taxid_key[!taxid_key$taxname %in% c("", NA, "NA"),]
 for(nc in 1:nrow(taxid_key)){
   taxon<-as.character(taxid_key[nc,]$taxname)
   if(!taxon %in% c("", "NA", NA)){
@@ -622,13 +638,15 @@ for(nc in 1:nrow(taxid_key)){
       tx <- worrms::wm_name2id(taxon)
     }, error = function(e){
       tx <- ""
+      return(tx)
     }
     ) 
     if(taxid != ""){
       taxnum <- taxid
-      taxid<-paste("urn:lsid:marinespecies.org:taxname:", taxid, sep="")
       taxdata <- data.frame(worrms::wm_record(taxnum))
-      
+      taxid_key[nc,]$scientificName <- taxdata$scientificname
+      taxid<-paste("urn:lsid:marinespecies.org:taxname:", taxid, sep="")
+      taxid_key[nc,]$aphID <- taxnum
       taxid_key[nc,]$scientificNameID <- taxid
       taxid_key[nc,]$kingdom<-taxdata$kingdom
       taxid_key[nc,]$phylum<-taxdata$phylum
@@ -644,20 +662,95 @@ for(nc in 1:nrow(taxid_key)){
       }
       taxid_key[nc,]$scientificNameAuthorship<-author
       
-    }else{
-      taxid_key[nc,]$scientificNameID <- taxid
-      taxid_key[nc,]$aphID <- taxnum
     }
   }
 }
 
-# move the data from the taxid_key to the occurrences
-for(term in setdiff(colnames(taxid_key), c("taxname", "aphID", colnames(extOccur)))){
-  extOccur[,term]  <- as.character(extOccur$scientificName)
-  extOccur[,term] <- unname(unlist(sapply(as.character(extOccur[,term]), 
-                                                               FUN = function(x){                                                 gsub(x,taxid_key[taxid_key$taxname==x,][,term],x)
-                                                            })))
+# second round for the taxa that had no match, need to be manually resolved
+# note: will take even longer than first step, and needs human interaction
+any(taxid_key$aphID=="") # TRUE if there are non-matches, then run for-loop below
+message(paste(as.character(sum((taxid_key$aphID=="")==TRUE)), " unmatched taxonomic names to resolve", sep=""))
+tax_count <- 0
+for(nc in 1:nrow(taxid_key)){
+  if(taxid_key[nc,]$aphID==""){
+    tax_count <- tax_count+1
+    if(tax_count %% 10==0) { #every 10th taxon, give a chance to break out
+      message("CONTINUE ?    hit any key to continue or n to stop")
+      input <- readline()
+      if(input=="n"){break}
+   }
+    taxon<-as.character(taxid_key[nc,]$taxname)
+    taxid <- tryCatch({
+       tx <- suppressMessages(obistools::match_taxa(taxon, ask = FALSE))
+    }, error = function(e){
+      tx <- ""
+      return(tx)
+    }
+    ) 
+    if(is.data.frame(taxid)){#means there was a match
+      taxnum<-""
+      if(!all(is.na(taxid)) & nrow(taxid==1)){ #case 1: one match, assume this to be correct
+        taxnum <- as.numeric(str_split(taxid$scientificNameID, "urn:lsid:marinespecies.org:taxname:")[[1]][2])
+      }else{ #case 2: multiple matches: needs human resolving
+        message(paste(taxon), "       leave empty to skip")
+        taxid <- suppressMessages(obistools::match_taxa(taxon, ask = TRUE))
+        if(!all(is.na(taxid))){
+          taxnum <- as.numeric(str_split(taxid$scientificNameID, "urn:lsid:marinespecies.org:taxname:")[[1]][2])
+        }else{
+          taxnum<-""
+        }
+      }
+      if(!(taxnum=="")){
+        taxdata <- data.frame(worrms::wm_record(taxnum))
+        taxid_key[nc,]$scientificName <- taxdata$scientificname
+        taxid_key[nc,]$aphID <- taxnum
+        taxid_key[nc,]$scientificNameID <- paste("urn:lsid:marinespecies.org:taxname:", taxnum, sep="")
+        taxid_key[nc,]$kingdom<-taxdata$kingdom
+        taxid_key[nc,]$phylum<-taxdata$phylum
+        taxid_key[nc,]$class<-taxdata$class
+        taxid_key[nc,]$order<-taxdata$order
+        taxid_key[nc,]$family<-taxdata$family
+        taxid_key[nc,]$genus<-taxdata$genus
+        taxid_key[nc,]$specificEpithet <- strsplit(taxdata$scientificname, 
+                                                 " ")[[1]][2]
+        if(!is.na(taxdata$authority)){
+              author<-strsplit(taxdata$authority, ", ")[[1]][1]
+              author<-gsub("\\(", "", author, fixed=FALSE)
+        }
+        taxid_key[nc,]$scientificNameAuthorship<-author
+      }
+    }
+  }
 }
+
+
+# split genus and species if no hit with worms
+for(tx in 1:nrow(taxid_key)){
+  if(taxid_key[tx,]$aphID==""){
+    if(length(str_split(taxid_key[tx,]$taxname, " ")[[1]])==2){
+      taxid_key[tx,]$genus <- str_split(taxid_key[tx,]$taxname, " ")[[1]][1]
+      taxid_key[tx,]$specificEpithet <- str_split(taxid_key[tx,]$taxname, " ")[[1]][2]
+    }
+  }
+}
+
+#add the taxonomy columns to the data
+for(term in setdiff(colnames(taxid_key), c("taxname", "aphID", "scientificName"))){
+  if(!term %in% colnames(extOccur)){
+    extOccur[,term]  <- NA
+  }
+}
+
+# fill the taxonomy columns with data
+for(tx in 1:nrow(taxid_key)){
+  targetRows <- which(extOccur$scientificName==taxid_key[tx,]$taxname)
+  for(term in setdiff(colnames(taxid_key), c("taxname", "aphID", "scientificName"))){
+    extOccur[targetRows,term] <- taxid_key[tx,term]
+  }
+  # update scientific name as last (to get rid of typos and missing capitals)
+  extOccur[targetRows,]$scientificName <- taxid_key[tx,]$scientificName
+}
+
 
 head(extOccur) #have another look at the data
 ```
@@ -692,6 +785,9 @@ write.csv(extOccur,
 # write to 13_processed
 write.csv(extOccur, paste(mainDir, intDir, datasetDir, procDataDir, fileNameoccur, sep="/"), na="", row.names = FALSE)
 
+write.csv(extOccur, "/Users/msweetlove/Royal Belgian Institute of Natural Sciences/Royal Belgian Institute of Natural Sciences/Anton Van de Putte - data_processing/03_processed/Belgica121/03_processed/B121_occurrenceExtension_REVBD.csv", na="", row.names = FALSE)
+
+coreData <- read.csv()
 
 #move from interim to processed to indicate work on the dataset has finished
 file.move(paste(mainDir, intDir, datasetDir, sep="/"), 
