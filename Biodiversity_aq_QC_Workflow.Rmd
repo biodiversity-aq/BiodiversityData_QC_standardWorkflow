@@ -14,7 +14,7 @@ Version 4.0  2021-01-25
 Authors Maxime Sweetlove
 
 ### 0.1 Summary
-This is the standardized workflow to Quality Control (QC) biodiversity data for biodiversity.aq. The main aims of this workflow is to 1) standardize the data into DarwinCore, 2) enrich the data with information that make it better computer readable or future-compatible and 3) perform serval general quality checks along the way to identify errors or typos in the data. Data can be formatted in DarwinCore Event or Occurrence core with various extensions (EventCore: occurrenceExtension, ExtendedMeasurementOrFactExtension; OccurrenceCore:ExtendedMeasurementOrFactExtension). 
+This is the standardized workflow to Quality Control (QC) biodiversity data for biodiversity.aq. The main aims of this workflow is to 1) standardize the data into DarwinCore, 2) enrich the data with information that make it better computer readable or future-compatible and 3) perform several general quality checks along the way to identify errors or typos in the data. Data can be formatted in DarwinCore Event or Occurrence core with various extensions (EventCore: occurrenceExtension, ExtendedMeasurementOrFactExtension; OccurrenceCore:ExtendedMeasurementOrFactExtension). 
 
 
 ### 0.2 How to use this workflow
