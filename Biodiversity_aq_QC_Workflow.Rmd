@@ -30,33 +30,42 @@ The idea is to choose a data Core type (occurrence or event), and to select and 
 This section needs to be run for each dataset.
 
 ```{r setting_up, echo=FALSE, eval = FALSE}
-#data manipulation libraries
-library(readxl)
-library(stringr)
-library(tidyr)
-library(dplyr)
+## If a package is installed, it will be loaded. If any are not, the missing package(s) will be installed from CRAN and then loaded.
+## First specify the packages of interest
+packages = c("readxl", "stringr", "tidyr", "dplyr", # data manipulation 
+             "worrms", "rgbif", # taxonomy
+             "mapview", "sp", "rgeos", "sf", "rnaturalearth", "rnaturalearthdata", # geography
+             "devtools") # to install github pkg if obistools and MicrobeDataTools do not exists
 
-#taxonomy
-library(worrms)
-library(rgbif)
+## Now load or install & load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
 
-#geography
-library(mapview)
-library(sp)
-library(rgeos)
-library(sf)
-library(rnaturalearth)
-library(rnaturalearthdata)
+if (!require(obistools)) {
+  devtools::install_github("iobis/obistools")
+  library("obistools", character.only = TRUE)
+}
 
-#data QC code
-# install from https://github.com/biodiversity-aq/MicrobeDataTools
-library(MicrobeDataTools)
-library(obistools)
+# comment out this section below because of 
+# Error in unloadNamespace(package) : namespace ‘raster’ is imported by ‘mapview’, ‘satellite’, ‘leafem’ so cannot be unloaded
+# if (!require(MicrobeDataTools)) {
+#   devtools::install_github("biodiversity-aq/MicrobeDataTools")
+#   library("MicrobeDataTools", character.only = TRUE)
+# }
+
+
 
 ```
 
 ### 1.2. Data-specific setup
-The reccomendation to clean and quality control data is to keep al raw (i.e. unaltered) and intermediate files in addition to the final files. This can best be done by physically separating those into individual folders. For this, we propose the 01_raw, 02_interim and 03_processed directory structure, which is based on the cookycutter principles. At the level of the person/team working on different datasets, the 01_raw folder holds all the datasets that still need to be processed. When work has started on a dataset, it is removed from the 01_raw folder and moved to the 02_interim to prevent people working in parallell on the same dataset. When all all processing has been done, the dataset can be moved to the 03_processed folder, indicating no more work is needed. Within the folder of each dataset, this tructure can be repeated. All raw files are kept unaltered in the dataset/11_raw folder, intermediate files can be stored in the dataset/12_interim folder, and the final cleaned data should be saved to the dataset/13_processed folder.
+The recommendation to clean and quality control data is to keep al raw (i.e. unaltered) and intermediate files in addition to the final files. This can best be done by physically separating those into individual folders. For this, we propose the 01_raw, 02_interim and 03_processed directory structure, which is based on the cookycutter principles. At the level of the person/team working on different datasets, the 01_raw folder holds all the datasets that still need to be processed. When work has started on a dataset, it is removed from the 01_raw folder and moved to the 02_interim to prevent people working in parallell on the same dataset. When all all processing has been done, the dataset can be moved to the 03_processed folder, indicating no more work is needed. Within the folder of each dataset, this tructure can be repeated. All raw files are kept unaltered in the dataset/11_raw folder, intermediate files can be stored in the dataset/12_interim folder, and the final cleaned data should be saved to the dataset/13_processed folder.
 
 The following chunk of code wel setup this structure:
 mainDir -|-01_raw/dataset
